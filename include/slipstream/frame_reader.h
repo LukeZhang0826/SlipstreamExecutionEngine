@@ -9,16 +9,17 @@
 
 #include "codec.h"
 
-template <typename MessageVariant>
+template <typename MessageVariant, size_t Capacity = 4096>
 class FrameReader {
+    static_assert(Capacity >= kMaxFrameLen);
 public:
-    bool feed(const std::byte* data, size_t n) {
+    [[nodiscard]] bool feed(const std::byte* data, size_t n) {
         if (n > sizeof(buf_) - len_) return false;
         std::memcpy(buf_ + len_, data, n);
         len_ += n;
         return true;
     }
-    DecodeResult next(MessageVariant& out) {
+    [[nodiscard]] DecodeResult next(MessageVariant& out) {
         size_t consumed{0};
         const DecodeResult r = decode_frame(buf_, len_, out, consumed);
         if (consumed > 0) {
@@ -29,7 +30,7 @@ public:
     }
 
 private:
-    std::byte buf_[4096];
+    std::byte buf_[Capacity];
     size_t    len_{0};
 };
 

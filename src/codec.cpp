@@ -237,8 +237,3 @@ DecodeResult decode_frame(const std::byte* in, const size_t len, OeMessage& out,
     consumed = frame_len;
     return DecodeResult::Ok;
 }
-
-// size_t decode_quote_frame(const std::byte* in, size_t len, Quote& q) {
-//     Quote back{};
-//     const size_t header_len = decode_frame_header(in, len, back);
-// }
