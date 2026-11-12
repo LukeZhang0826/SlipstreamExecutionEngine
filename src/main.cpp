@@ -3,43 +3,68 @@
 #include "slipstream/messages.h"
 #include "slipstream/codec.h"
 
-int main() {
-    Quote quote {
-        .symbol = "Quote",
-        .ts_ns = 254,
-        .bid_qty = 2,
-        .bid_px = 3,
-        .ask_qty = 4,
+#include "slipstream/net.h"
+#include "slipstream/frame_reader.h"
+#include <sys/socket.h>
 
-        .ask_px = 5,
-    };
 
-    std::byte buf[kFrameHeaderLen + kQuoteBodyLen];
-    const size_t n = encode_frame(MdMessage{quote}, buf, sizeof(buf));
-    for (size_t i = 0; i < n; ++i)
-        std::cout << std::format("{:02x} ", std::to_integer<unsigned>(buf[i]));
-    std::cout << "\n";
+namespace {
+    constexpr size_t kRecvChunk = 2048;
 
-    MdMessage new_quote{};
-    size_t consumed = 0;
-    const DecodeResult decode_result = decode_frame(buf, sizeof(buf), new_quote, consumed);
-    if (decode_result == DecodeResult::Ok) {
-        if (const Quote* q = std::get_if<Quote>(&new_quote)) {
-            std::cout << q->ts_ns << " " << q->bid_px << "\n";
+    size_t run_md_session(const FileDescriptor& conn) {
+        FrameReader<MdMessage> reader;
+        std::byte chunk[kRecvChunk];
+        size_t quotes = 0;
+
+        while (true) {
+            const ssize_t n = ::recv(conn.get(), chunk, sizeof(chunk), 0);
+
+            if (n == 0) break;
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                std::perror("recv");
+                break;
+            }
+
+            if (!reader.feed(chunk, static_cast<size_t>(n))) {
+                std::fprintf(stderr, "frame buffer overflow\n");
+                break;
+            }
+
+            MdMessage msg;
+            bool draining = true;
+            while (draining) {
+                switch (reader.next(msg)) {
+                    case DecodeResult::Ok:
+                        if (std::get_if<Quote>(&msg)) ++quotes;
+                        break;
+                    case DecodeResult::Unknown:
+                        break;
+                    case DecodeResult::Invalid:
+                        std::fprintf(stderr, "invalid frame, dropping connection\n");
+                        return quotes;
+                    case DecodeResult::Incomplete:
+                        draining = false;
+                        break;
+                }
+            }
         }
+        return quotes;
     }
-    // std::byte dest[44];
-    // encode_quote(quote, dest);
-    //
-    // for (size_t i = 0; i < 44; ++i)
-    //     std::cout <<   Quote quote {
-    //        .symbol = "Quote",
-    //        .ts_ns = 254,
-    //        .bid_qty = 2,
-    //        .bid_px = 3,
-    //        .ask_qty = 4,
-    //        .ask_px = 5,
-    //    }; std::format("{:02x} ", std::to_integer<unsigned>(dest[i]));
 
+}
+
+int main() {
+    const FileDescriptor listener = listen_on(14200);
+    if (!listener.valid()) return 1;
+    std::printf("listening on 14200\n");
+
+    const FileDescriptor conn = accept_one(listener);
+    if (!conn.valid()) return 1;
+    std::printf("md client connected\n\n");
+    std::fflush(stdout);
+
+    const size_t quotes = run_md_session(conn);
+    std::printf("quotes: %zu\n", quotes);
     return 0;
 }
