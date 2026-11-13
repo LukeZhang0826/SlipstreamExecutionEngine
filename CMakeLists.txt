@@ -9,9 +9,11 @@ add_compile_options(-Wall -Wextra -Wpedantic) # before any target applies those 
 
 add_library(slipstream_codec src/codec.cpp
         include/slipstream/frame_reader.h
-        tests/codec_test.cpp
         src/net.cpp
         include/slipstream/net.h
+        src/config.cpp
+        include/slipstream/config.h
+        include/slipstream/book.h
 )
 target_include_directories(slipstream_codec PUBLIC include) # adds include to header search path
 
