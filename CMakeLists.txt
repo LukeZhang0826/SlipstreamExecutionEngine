@@ -15,6 +15,8 @@ add_library(slipstream_codec src/codec.cpp
         include/slipstream/config.h
         include/slipstream/book.h
         include/slipstream/vwap.h
+        include/slipstream/engine.h
+        src/engine.cpp
 )
 target_include_directories(slipstream_codec PUBLIC include) # adds include to header search path
 
