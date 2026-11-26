@@ -8,16 +8,18 @@
 
 namespace {
     constexpr uint64_t kWindowMs = 1000;
-    constexpr uint64_t kWindowNs = kWindowMs * 1000000;
+    constexpr uint64_t kWindowNs = kWindowMs * 1'000'000;
 
-    Trade make_trade(const uint64_t ts_ns, const int64_t px, const uint32_t qty) {
-        Trade t{};
-        t.ts_ns = ts_ns;
-        t.px = px;
-        t.qty = qty;
-        t.aggressor = 'B';
-        t.id = 1;
-        return t;
+    Quote make_quote(const uint64_t ts_ns,
+                     const int64_t bid_px, const uint32_t bid_qty,
+                     const int64_t ask_px, const uint32_t ask_qty) {
+        Quote q{};
+        q.ts_ns   = ts_ns;
+        q.bid_px  = bid_px;
+        q.bid_qty = bid_qty;
+        q.ask_px  = ask_px;
+        q.ask_qty = ask_qty;
+        return q;
     }
 }
 
@@ -26,74 +28,94 @@ TEST(RollingVwap, EmptyHasNoValue) {
     int64_t out = -1;
     EXPECT_FALSE(v.value(out));
     EXPECT_FALSE(v.has_full_window());
-    EXPECT_EQ(v.window_qty(), 0);
+    EXPECT_EQ(v.quotes_seen(), 0u);
     EXPECT_EQ(v.size(), 0u);
 }
 
-TEST(RollingVwap, SingleTradeIsItsOwnVwap) {
+TEST(RollingVwap, SingleQuoteIsWeightedAcrossItsTwoSides) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 100));
+    // (200*200'000 + 300*210'000) / 500 == 206'000, so 20.60.
+    v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
 
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
-    EXPECT_EQ(out, 1'000'000);
-    EXPECT_EQ(v.window_qty(), 100);
+    EXPECT_EQ(out, 206'000);
 }
 
-TEST(RollingVwap, WeightsByQuantityNotCount) {
+TEST(RollingVwap, ReproducesTheBriefsWorkedExample) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 100));
-    v.on_trade(make_trade(1, 1'010'000, 300));
+    v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));  // 20.60
+    v.on_quote(make_quote(1, 220'000, 250, 250'000, 400));  // 23.8461
 
-    // (1'000'000*100 + 1'010'000*300) / 400 == 1'007'500, so 100.75.
+    // The brief averages the per quote values rather than pooling the volume:
+    // (206'000 + 238'461) / 2 == 222'230, which displays as 22.22.
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
-    EXPECT_EQ(out, 1'007'500);
-    EXPECT_EQ(v.window_qty(), 400);
+    EXPECT_EQ(out, 222'230);
 }
 
-TEST(RollingVwap, DivisionTruncates) {
+TEST(RollingVwap, PooledVolumeWouldGiveADifferentAnswer) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 1));
-    v.on_trade(make_trade(1, 1'000'001, 2));
+    v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
+    v.on_quote(make_quote(1, 220'000, 250, 250'000, 400));
 
-    // 3'000'002 / 3 is 1'000'000.67, which truncates down.
+    // Guard against drifting back to sum(px*qty)/sum(qty), which would be
+    // 258'000'000 / 1150 == 224'347 here.
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
-    EXPECT_EQ(out, 1'000'000);
+    EXPECT_NE(out, 224'347);
 }
 
-TEST(RollingVwap, TradeExactlyOneWindowOldIsEvicted) {
+TEST(RollingVwap, OneSidedQuoteUsesOnlyTheLiveSide) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 100));
+    // Zero bid qty is a cancel of the bid, so only the ask carries weight.
+    v.on_quote(make_quote(0, 200'000, 0, 210'000, 300));
+
+    int64_t out = 0;
+    ASSERT_TRUE(v.value(out));
+    EXPECT_EQ(out, 210'000);
+}
+
+TEST(RollingVwap, FullyCancelledQuoteCountsForTheGateButNotTheBenchmark) {
+    RollingVwap v{kWindowMs};
+    v.on_quote(make_quote(0, 0, 0, 0, 0));
+
+    int64_t out = -1;
+    EXPECT_FALSE(v.value(out));
+    EXPECT_EQ(v.size(), 0u);
+    EXPECT_EQ(v.quotes_seen(), 1u);
+}
+
+TEST(RollingVwap, QuoteExactlyOneWindowOldIsEvicted) {
+    RollingVwap v{kWindowMs};
+    v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
 
     v.advance(kWindowNs - 1);
     EXPECT_EQ(v.size(), 1u);
 
     v.advance(kWindowNs);
     EXPECT_EQ(v.size(), 0u);
-    EXPECT_EQ(v.window_qty(), 0);
 
     int64_t out = -1;
     EXPECT_FALSE(v.value(out));
 }
 
-TEST(RollingVwap, EvictionLeavesOnlyTheTradesInsideTheWindow) {
+TEST(RollingVwap, EvictionLeavesOnlyTheQuotesInsideTheWindow) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 100));
-    v.on_trade(make_trade(kWindowNs / 2, 2'000'000, 100));
-
-    v.on_trade(make_trade(kWindowNs, 3'000'000, 100));
+    v.on_quote(make_quote(0, 100'000, 100, 100'000, 100));              // leaves
+    v.on_quote(make_quote(kWindowNs / 2, 200'000, 100, 200'000, 100));  // stays
+    v.on_quote(make_quote(kWindowNs, 300'000, 100, 300'000, 100));
 
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
-    EXPECT_EQ(out, 2'500'000);
+    EXPECT_EQ(out, 250'000);   // (200'000 + 300'000) / 2
     EXPECT_EQ(v.size(), 2u);
+    EXPECT_EQ(v.quotes_seen(), 3u);
 }
 
 TEST(RollingVwap, FullWindowGateNeedsAWindowOfElapsedTime) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(5'000, 1'000'000, 10));
+    v.on_quote(make_quote(5'000, 200'000, 200, 210'000, 300));
     EXPECT_FALSE(v.has_full_window());
 
     v.advance(5'000 + kWindowNs - 1);
@@ -105,7 +127,7 @@ TEST(RollingVwap, FullWindowGateNeedsAWindowOfElapsedTime) {
 
 TEST(RollingVwap, GateStaysSetAfterTheWindowDrains) {
     RollingVwap v{kWindowMs};
-    v.on_trade(make_trade(0, 1'000'000, 10));
+    v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
     v.advance(10 * kWindowNs);
 
     EXPECT_TRUE(v.has_full_window());

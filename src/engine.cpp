@@ -142,7 +142,7 @@ void Engine::service_oe() {
 
     oe_ = LinkState::Closed;
     oe_conn_ = FileDescriptor{};
-    std::printf("oe client disconnected\n");
+    std::printf("oe client don_tradeisconnected\n");
     std::fflush(stdout);
 }
 
@@ -151,13 +151,14 @@ void Engine::on_quote(const Quote& q) {
     if (!filter_.matches(q.symbol)) return;
     ++stats_.quotes_kept;
     book_.apply(q);
+    vwap_.on_quote(q);
 }
 
 void Engine::on_trade(const Trade& t) {
     ++stats_.trades_received;
     if (!filter_.matches(t.symbol)) return;
     ++stats_.trades_kept;
-    vwap_.on_trade(t);
+    vwap_.advance(t.ts_ns);
 }
 
 void Engine::report() const {
@@ -172,8 +173,8 @@ void Engine::report() const {
 
     int64_t v = 0;
     if (vwap_.value(v)) {
-        std::printf("last vwap  %.4f over %ld shares, %zu trades in window, warm %s\n",
-                    static_cast<double>(v) / 10000.0, vwap_.window_qty(), vwap_.size(),
+        std::printf("last vwap  %.4f over %zu quotes in window, warm %s\n",
+                    static_cast<double>(v) / 10000.0, vwap_.size(),
                     vwap_.has_full_window() ? "yes" : "no");
     }
 }
