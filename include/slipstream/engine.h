@@ -53,6 +53,7 @@ private:
     void service_md();
     void service_oe();
 
+    void end_session();
 
     [[nodiscard]] bool send_oe(const OeMessage& msg);
 

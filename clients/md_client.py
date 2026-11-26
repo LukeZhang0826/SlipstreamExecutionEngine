@@ -23,17 +23,21 @@ def main():
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         sent = 0
-        for row in replay(rows, args.speed):
-            frame = wire.quote_frame(
-                args.symbol,
-                time.time_ns(),
-                int(row["BidQty"]),
-                wire.to_fixed(row["BidPrice"]),
-                int(row["AskQty"]),
-                wire.to_fixed(row["AskPrice"]),
-            )
-            sock.sendall(frame)
-            sent += 1
+        try:
+            for row in replay(rows, args.speed):
+                frame = wire.quote_frame(
+                    args.symbol,
+                    time.time_ns(),
+                    int(row["BidQty"]),
+                    wire.to_fixed(row["BidPrice"]),
+                    int(row["AskQty"]),
+                    wire.to_fixed(row["AskPrice"]),
+                )
+                sock.sendall(frame)
+                sent += 1
+        except (BrokenPipeError, ConnectionResetError):
+            print(f"server closed the connection after {sent} quotes")
+            return
 
         print(f"sent {sent} quotes")
 

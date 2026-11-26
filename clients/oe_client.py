@@ -58,20 +58,25 @@ def main():
         t.start()
 
         sent = 0
-        for row in replay(rows, args.speed):
-            if stop.is_set():
-                break
+        try:
+            for row in replay(rows, args.speed):
+                if stop.is_set():
+                    break
 
-            sent += 1
-            frame = wire.trade_frame(
-                args.symbol,
-                time.time_ns(),
-                int(row["Qty"]),
-                wire.to_fixed(row["Price"]),
-                row["Aggressor"],
-                sent,
-            )
-            sock.sendall(frame)
+                sent += 1
+                frame = wire.trade_frame(
+                    args.symbol,
+                    time.time_ns(),
+                    int(row["Qty"]),
+                    wire.to_fixed(row["Price"]),
+                    row["Aggressor"],
+                    sent,
+                )
+                sock.sendall(frame)
+                
+        except (BrokenPipeError, ConnectionResetError):
+            print(f"server closed the connection after {sent} trades")
+            return
 
         sock.shutdown(socket.SHUT_WR)
         t.join(timeout=5.0)

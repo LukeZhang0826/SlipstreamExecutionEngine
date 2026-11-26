@@ -145,6 +145,7 @@ void Engine::service_md() {
     md_conn_ = FileDescriptor{};
     std::printf("md client disconnected\n");
     std::fflush(stdout);
+    end_session();
 }
 
 void Engine::service_oe() {
@@ -157,6 +158,7 @@ void Engine::service_oe() {
     oe_conn_ = FileDescriptor{};
     std::printf("oe client disconnected\n");
     std::fflush(stdout);
+    end_session();
 }
 
 void Engine::on_quote(const Quote& q) {
@@ -272,4 +274,17 @@ void Engine::report() const {
         std::printf("last vwap           %.4f over %zu quotes in window\n",
                     as_price(v), vwap_.size());
     }
+}
+
+void Engine::end_session() {
+    if (md_ == LinkState::Connected) {
+        std::printf("closing md link\n");
+        md_conn_ = FileDescriptor{};
+    }
+    if (oe_ == LinkState::Connected) {
+        std::printf("closing oe link\n");
+        oe_conn_ = FileDescriptor{};
+    }
+    md_ = LinkState::Closed;
+    oe_ = LinkState::Closed;
 }
