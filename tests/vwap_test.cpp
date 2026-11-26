@@ -34,7 +34,7 @@ TEST(RollingVwap, EmptyHasNoValue) {
 
 TEST(RollingVwap, SingleQuoteIsWeightedAcrossItsTwoSides) {
     RollingVwap v{kWindowMs};
-    // (200*200'000 + 300*210'000) / 500 == 206'000, so 20.60.
+    // (200*200'000 + 300*210'000) / 500 == 206'000 => 20.60.
     v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
 
     int64_t out = 0;
@@ -47,8 +47,7 @@ TEST(RollingVwap, ReproducesTheBriefsWorkedExample) {
     v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));  // 20.60
     v.on_quote(make_quote(1, 220'000, 250, 250'000, 400));  // 23.8461
 
-    // The brief averages the per quote values rather than pooling the volume:
-    // (206'000 + 238'461) / 2 == 222'230, which displays as 22.22.
+    // (206'000 + 238'461) / 2 == 222'230 => 22.22.
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
     EXPECT_EQ(out, 222'230);
@@ -59,7 +58,7 @@ TEST(RollingVwap, PooledVolumeWouldGiveADifferentAnswer) {
     v.on_quote(make_quote(0, 200'000, 200, 210'000, 300));
     v.on_quote(make_quote(1, 220'000, 250, 250'000, 400));
 
-    // Guard against drifting back to sum(px*qty)/sum(qty), which would be
+    // Guard against drifting back to sum(px*qty)/sum(qty)
     // 258'000'000 / 1150 == 224'347 here.
     int64_t out = 0;
     ASSERT_TRUE(v.value(out));
@@ -68,7 +67,7 @@ TEST(RollingVwap, PooledVolumeWouldGiveADifferentAnswer) {
 
 TEST(RollingVwap, OneSidedQuoteUsesOnlyTheLiveSide) {
     RollingVwap v{kWindowMs};
-    // Zero bid qty is a cancel of the bid, so only the ask carries weight.
+    // Zero bid qty is a cancel of the bid
     v.on_quote(make_quote(0, 200'000, 0, 210'000, 300));
 
     int64_t out = 0;
