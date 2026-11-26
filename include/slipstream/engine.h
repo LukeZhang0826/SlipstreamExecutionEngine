@@ -13,6 +13,8 @@
 #include "messages.h"
 #include "net.h"
 #include "vwap.h"
+#include "codec.h"
+#include "strategy.h"
 
 class Engine {
 public:
@@ -21,6 +23,10 @@ public:
         size_t quotes_kept = 0; // for the config symbol
         size_t trades_received = 0;
         size_t trades_kept = 0;
+        size_t accepted = 0;
+        size_t rejected = 0;
+        size_t suppressed = 0; // trades arrived before warmup
+        size_t reject_reasons[kRejectReasonCount] = {};
     };
 
     explicit Engine(const Config& cfg);
@@ -37,6 +43,7 @@ public:
     [[nodiscard]] const Stats& stats() const { return stats_; }
     [[nodiscard]] const L1& book() const { return book_; }
     [[nodiscard]] const RollingVwap& vwap() const { return vwap_; }
+    [[nodiscard]] const Strategy& strategy() const { return strategy_; }
 
 private:
     enum class LinkState { Listening, Connected, Closed };
@@ -45,6 +52,11 @@ private:
     void accept_oe();
     void service_md();
     void service_oe();
+
+
+    [[nodiscard]] bool send_oe(const OeMessage& msg);
+
+    void send_verdict(const Trade& t, const Decision& d);
 
     [[nodiscard]] bool done() const {
         return md_ == LinkState::Closed && oe_ == LinkState::Closed;
@@ -55,6 +67,8 @@ private:
     SymbolFilter filter_;
     RollingVwap  vwap_;
     L1           book_;
+    Strategy     strategy_;
+    uint64_t     next_order_id_ = 0;
 
     FileDescriptor md_listener_;
     FileDescriptor oe_listener_;
