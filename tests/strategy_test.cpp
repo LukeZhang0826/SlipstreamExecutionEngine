@@ -278,3 +278,65 @@ TEST(Strategy, RejectedTradesDoNotConsumeTheBudget) {
     EXPECT_EQ(f.strategy.bought_qty(), 0u);
     EXPECT_EQ(f.strategy.buy_participation_ppm(), 0u);
 }
+
+TEST(Strategy, AverageFillIsWeightedByQuantity) {
+    Fixture f;
+    f.set_book(1'007'000, 1'003'000);
+
+    // Two accepted buys at different prices and sizes:
+    // (1'003'500*50 + 1'005'000*100) / 150 == 1'004'500.
+    // Total stays at 150, under the 165 the participation cap allows here.
+    ASSERT_EQ(f.strategy.judge(make_trade('B', 1'003'500, 50), f.book, f.vwap).verdict,
+              Verdict::Accept);
+    ASSERT_EQ(f.strategy.judge(make_trade('B', 1'005'000, 100), f.book, f.vwap).verdict,
+              Verdict::Accept);
+
+    int64_t avg = 0;
+    ASSERT_TRUE(f.strategy.avg_buy_px(avg));
+    EXPECT_EQ(avg, 1'004'500);
+    EXPECT_EQ(f.strategy.bought_qty(), 150u);
+}
+
+
+TEST(Strategy, AverageFillsDoNotLeakAcrossSides) {
+    Fixture f;
+    f.set_book(1'007'000, 1'003'000);
+
+    ASSERT_EQ(f.strategy.judge(make_trade('B', 1'003'500, 100), f.book, f.vwap).verdict,
+              Verdict::Accept);
+    ASSERT_EQ(f.strategy.judge(make_trade('S', 1'006'500, 100), f.book, f.vwap).verdict,
+              Verdict::Accept);
+
+    int64_t buy = 0;
+    int64_t sell = 0;
+    ASSERT_TRUE(f.strategy.avg_buy_px(buy));
+    ASSERT_TRUE(f.strategy.avg_sell_px(sell));
+    EXPECT_EQ(buy, 1'003'500);
+    EXPECT_EQ(sell, 1'006'500);
+}
+
+TEST(Strategy, NoAverageFillWithoutAnAccept) {
+    Fixture f;
+    f.set_book(1'007'000, 1'004'500);   // ask outside the band
+
+    ASSERT_EQ(f.strategy.judge(make_trade('B', 1'004'500, 100), f.book, f.vwap).verdict,
+              Verdict::Reject);
+
+    int64_t out = -1;
+    EXPECT_FALSE(f.strategy.avg_buy_px(out));
+    EXPECT_FALSE(f.strategy.avg_sell_px(out));
+}
+
+TEST(RollingVwap, SessionValueIgnoresEviction) {
+    RollingVwap v{kWindowMs};
+    v.on_quote(make_quote(0, 100'000, 100, 100'000, 100));              // evicted later
+    v.on_quote(make_quote(kWindowNs, 300'000, 100, 300'000, 100));
+
+    int64_t window = 0;
+    ASSERT_TRUE(v.value(window));
+    EXPECT_EQ(window, 300'000);     // only the second quote is still in the window
+
+    int64_t session = 0;
+    ASSERT_TRUE(v.session_value(session));
+    EXPECT_EQ(session, 200'000);    // both quotes, (100'000 + 300'000) / 2
+}
