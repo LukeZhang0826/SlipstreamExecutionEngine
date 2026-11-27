@@ -6,6 +6,8 @@
 #define SLIPSTREAMEXECUTIONENGINE_ENGINE_H
 
 #include <cstddef>
+#include <string>
+#include <string_view>
 
 #include "book.h"
 #include "config.h"
@@ -25,6 +27,7 @@ public:
         size_t trades_kept = 0;
         size_t accepted = 0;
         size_t rejected = 0;
+        size_t halted = 0;
         size_t suppressed = 0; // trades arrived before warmup
         size_t reject_reasons[kRejectReasonCount] = {};
         uint64_t offered_qty = 0;
@@ -48,6 +51,7 @@ public:
 
 private:
     enum class LinkState { Listening, Connected, Closed };
+    enum class SessionState { Open, Halted };
 
     void accept_md();
     void accept_oe();
@@ -56,6 +60,10 @@ private:
 
     void end_session();
     void check_oe_staleness();
+
+    void service_stdin();
+    void handle_command(std::string_view line);
+    void announce_session(uint8_t state);
 
     [[nodiscard]] int poll_timeout_ms() const;
 
@@ -76,6 +84,10 @@ private:
 
     uint64_t     next_order_id_ = 0;
     uint64_t     oe_idle_since_ns_ = 0;
+
+    SessionState session_ = SessionState::Open;
+    bool stdin_open_ = true;
+    std::string stdin_line_;
 
     FileDescriptor md_listener_;
     FileDescriptor oe_listener_;

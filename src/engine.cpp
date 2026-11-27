@@ -7,11 +7,14 @@
 #include "slipstream/config.h"
 
 #include <poll.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <time.h>
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <cctype>
 
 #include <cerrno>
 #include <cstdio>
@@ -19,6 +22,12 @@
 namespace {
     constexpr size_t kRecvChunk = 2048;
     constexpr uint64_t kHeartbeatNs = 5'000'000'000;
+
+    constexpr uint8_t kSessionOpen = 0;
+    constexpr uint8_t kSessionHalt = 1;
+    constexpr uint8_t kSessionClose = 2;
+
+    constexpr size_t kMaxCommandLen = 1024;
 
     uint64_t clock_ns(const clockid_t clock) {
         timespec ts{};
@@ -90,9 +99,9 @@ bool Engine::bind() {
 
 void Engine::run() {
     while (!done()) {
-        pollfd fds[4]{};
+        pollfd fds[5]{};
         int n = 0;
-        int md_listen_i = -1, oe_listen_i = -1, md_conn_i = -1, oe_conn_i = -1;
+        int md_listen_i = -1, oe_listen_i = -1, md_conn_i = -1, oe_conn_i = -1, stdin_i = -1;
 
         if (md_ == LinkState::Listening) {
             fds[n] = {md_listener_.get(), POLLIN, 0};
@@ -110,6 +119,10 @@ void Engine::run() {
             fds[n] = {oe_conn_.get(), POLLIN, 0};
             oe_conn_i = n++;
         }
+        if (stdin_open_) {
+            fds[n] = {STDIN_FILENO, POLLIN, 0};
+            stdin_i = n++;
+        }
 
         const int ready = ::poll(fds, static_cast<nfds_t>(n), poll_timeout_ms());
         if (ready < 0) {
@@ -124,6 +137,7 @@ void Engine::run() {
         if (oe_listen_i >= 0 && (fds[oe_listen_i].revents & POLLIN)) accept_oe();
         if (md_conn_i >= 0 && (fds[md_conn_i].revents & kReadable)) service_md();
         if (oe_conn_i >= 0 && (fds[oe_conn_i].revents & kReadable)) service_oe();
+        if (stdin_i >= 0 && (fds[stdin_i].revents & (POLLIN | POLLHUP))) service_stdin();
 
         check_oe_staleness();
     }
@@ -200,6 +214,11 @@ void Engine::on_trade(const Trade& t) {
     stats_.offered_qty += t.qty;
 
     vwap_.advance(t.ts_ns);
+
+    if (session_ == SessionState::Halted) {
+        ++stats_.halted;
+        return;
+    }
 
     const Decision d = strategy_.judge(t, book_, vwap_);
     switch (d.verdict) {
@@ -305,6 +324,81 @@ void Engine::check_oe_staleness() {
 
 }
 
+void Engine::service_stdin() {
+    char chunk[256];
+    const ssize_t n = ::read(STDIN_FILENO, chunk, sizeof(chunk));
+    if (n <= 0) {
+        stdin_open_ = false;
+        return;
+    }
+
+    stdin_line_.append(chunk, static_cast<size_t>(n));
+
+    for (size_t nl = stdin_line_.find('\n'); nl != std::string::npos; nl = stdin_line_.find('\n')) {
+        handle_command(std::string_view{stdin_line_}.substr(0, nl));
+        stdin_line_.erase(0, nl + 1);
+        if (done()) return;
+    }
+
+    if (stdin_line_.size() > kMaxCommandLen) stdin_line_.clear();
+}
+
+void Engine::handle_command(std::string_view line) {
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front()))) {
+        line.remove_prefix(1);
+    }
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
+        line.remove_suffix(1);
+    }
+    if (line.empty()) return;
+
+    std::string cmd;
+    cmd.reserve(line.size());
+    for (const char ch : line) {
+        cmd.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+    }
+
+    if (cmd == "HALT") {
+        if (session_ == SessionState::Halted) {
+            std::printf("already halted\n");
+        } else {
+            session_ = SessionState::Halted;
+            announce_session(kSessionHalt);
+            std::printf("HALT: new orders suppressed, benchmark still updating\n");
+        }
+    } else if (cmd == "OPEN") {
+        if (session_ == SessionState::Open) {
+            std::printf("already open\n");
+        } else {
+            session_ = SessionState::Open;
+            announce_session(kSessionOpen);
+            std::printf("OPEN: sending orders again\n");
+        }
+    } else if (cmd == "CLOSE") {
+        announce_session(kSessionClose);
+        std::printf("CLOSE: closing both links\n");
+        end_session();
+    } else {
+        std::printf("unknown command '%.*s', expected HALT, OPEN or CLOSE\n",
+                    static_cast<int>(cmd.size()), cmd.data());
+    }
+    std::fflush(stdout);
+}
+
+void Engine::announce_session(const uint8_t state) {
+    if (oe_ != LinkState::Connected) return;
+
+    SessionControl sc{};
+    sc.ts_ns = now_ns();
+    sc.state = state;
+
+    if (!send_oe(OeMessage{sc})) {
+        std::printf("oe client write failed\n");
+        std::fflush(stdout);
+        end_session();
+    }
+}
+
 void Engine::report() const {
     std::printf("=== SLIPSTREAM EXECUTION REPORT ===\n");
     std::printf("symbol              %s\n", cfg_.symbol.c_str());
@@ -315,6 +409,7 @@ void Engine::report() const {
     std::printf("accepted            %zu\n", stats_.accepted);
     std::printf("rejected            %zu\n", stats_.rejected);
     std::printf("pre warm up         %zu\n", stats_.suppressed);
+    if (stats_.halted > 0) std::printf("while halted        %zu\n", stats_.halted);
     for (size_t i = 0; i < kRejectReasonCount; ++i) {
         if (stats_.reject_reasons[i] == 0) continue;
         std::printf("  %-24s  %zu\n", to_string(static_cast<RejectReason>(i)),
