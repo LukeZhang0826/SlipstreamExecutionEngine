@@ -53,6 +53,9 @@ public:
     [[nodiscard]] uint64_t buy_participation_ppm() const;
     [[nodiscard]] uint64_t sell_participation_ppm() const;
 
+    [[nodiscard]] bool avg_buy_px(int64_t& out) const;
+    [[nodiscard]] bool avg_sell_px(int64_t& out) const;
+
 private:
     [[nodiscard]] bool warm(const RollingVwap& vwap) const;
 
@@ -66,6 +69,9 @@ private:
     uint64_t observed_ask_qty_ = 0;
     uint64_t sold_qty_ = 0;
     uint64_t bought_qty_ = 0;
+
+    int64_t sold_notional_ = 0;
+    int64_t bought_notional_ = 0;
 };
 
 

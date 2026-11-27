@@ -5,9 +5,9 @@
 #include "slipstream/strategy.h"
 
 namespace {
-    constexpr int64_t kBandScale = 1000000;
+    constexpr int64_t kBandScale = 1'000'000;
     constexpr size_t kMinQuotes = 10;
-    constexpr uint64_t kCapScale = 1000000;
+    constexpr uint64_t kCapScale = 1'000'000;
 }
 
 const char* to_string(const RejectReason r) {
@@ -51,6 +51,19 @@ uint64_t Strategy::sell_participation_ppm() const {
     if (observed_bid_qty_ == 0) return 0;
     return sold_qty_ * kCapScale / observed_bid_qty_;
 }
+
+bool Strategy::avg_buy_px(int64_t& out) const {
+    if (bought_qty_ == 0) return false;
+    out = bought_notional_ / static_cast<int64_t>(bought_qty_);
+    return true;
+}
+
+bool Strategy::avg_sell_px(int64_t& out) const {
+    if (sold_qty_ == 0) return false;
+    out = sold_notional_ / static_cast<int64_t>(sold_qty_);
+    return true;
+}
+
 
 Decision Strategy::judge(const Trade& t, const L1& book, const RollingVwap& vwap) {
     Decision d;
@@ -107,8 +120,14 @@ Decision Strategy::judge(const Trade& t, const L1& book, const RollingVwap& vwap
         return d;
     }
 
-    if (buying) bought_qty_ += t.qty;
-    else sold_qty_ += t.qty;
+    const int64_t notional = t.px * static_cast<int64_t>(t.qty);
+    if (buying) {
+        bought_qty_ += t.qty;
+        bought_notional_ += notional;
+    } else {
+        sold_qty_ += t.qty;
+        sold_notional_ += notional;
+    }
 
     d.verdict = Verdict::Accept;
     d.reason = RejectReason::None;

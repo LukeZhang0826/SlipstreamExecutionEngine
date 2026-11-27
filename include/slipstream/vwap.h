@@ -38,6 +38,9 @@ public:
 
         quotes_.push_back(Entry{q.ts_ns, quote_vwap});
         sum_quote_vwap_ += quote_vwap;
+
+        session_sum_ += quote_vwap;
+        ++session_quotes_;
     }
 
     [[nodiscard]] bool value(int64_t& out) const {
@@ -54,6 +57,12 @@ public:
 
     [[nodiscard]] size_t size() const { return quotes_.size(); }
 
+    [[nodiscard]] bool session_value(int64_t& out) const {
+        if (session_quotes_ == 0) return false;
+        out = session_sum_ / static_cast<int64_t>(session_quotes_);
+        return true;
+    }
+
 private:
     struct Entry {
         uint64_t ts_ns;
@@ -67,6 +76,8 @@ private:
     size_t quotes_seen_ = 0;
     bool seen_any_ = false;
     int64_t sum_quote_vwap_ = 0;
+    int64_t session_sum_ = 0;
+    size_t session_quotes_ = 0;
 };
 
 

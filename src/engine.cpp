@@ -36,6 +36,12 @@ namespace {
     double as_price(const int64_t fixed) { return static_cast<double>(fixed) / 10'000.0; }
     double as_percent(const uint64_t ppm) { return static_cast<double>(ppm) / 10'000.0; }
 
+    int64_t slippage_bps_x100(const int64_t fill_px, const int64_t benchmark) {
+        return (fill_px - benchmark) * 1'000'000 / benchmark;
+    }
+
+    double as_bps(const int64_t bps_x100) { return static_cast<double>(bps_x100) / 100.0; }
+
     template <typename Variant, typename Handler>
     bool pump(const FileDescriptor& conn, FrameReader<Variant>& reader, Handler handle) {
         std::byte chunk[kRecvChunk];
@@ -191,6 +197,7 @@ void Engine::on_trade(const Trade& t) {
     ++stats_.trades_received;
     if (!filter_.matches(t.symbol)) return;
     ++stats_.trades_kept;
+    stats_.offered_qty += t.qty;
 
     vwap_.advance(t.ts_ns);
 
@@ -253,45 +260,6 @@ bool Engine::send_oe(const OeMessage& msg) {
     return true;
 }
 
-void Engine::report() const {
-    std::printf("=== SLIPSTREAM EXECUTION REPORT ===\n");
-    std::printf("symbol              %s\n", cfg_.symbol.c_str());
-    std::printf("quotes              %zu observed, %zu for symbol\n",
-                stats_.quotes_received, stats_.quotes_kept);
-    std::printf("trades              %zu observed, %zu for symbol\n",
-                stats_.trades_received, stats_.trades_kept);
-    std::printf("accepted            %zu\n", stats_.accepted);
-    std::printf("rejected            %zu\n", stats_.rejected);
-    std::printf("pre warm up         %zu\n", stats_.suppressed);
-    for (size_t i = 0; i < kRejectReasonCount; ++i) {
-        if (stats_.reject_reasons[i] == 0) continue;
-        std::printf("  %-24s  %zu\n", to_string(static_cast<RejectReason>(i)),
-                    stats_.reject_reasons[i]);
-    }
-    std::printf("bought qty          %lu  of %lu offered on the ask\n",
-                strategy_.bought_qty(), strategy_.observed_ask_qty());
-    std::printf("sold qty            %lu  of %lu offered on the bid\n",
-                strategy_.sold_qty(), strategy_.observed_bid_qty());
-    std::printf("buy participation   %.2f%%  (cap %.2f%%)\n",
-                as_percent(strategy_.buy_participation_ppm()),
-                as_percent(cfg_.participation_cap_ppm));
-    std::printf("sell participation  %.2f%%  (cap %.2f%%)\n",
-                as_percent(strategy_.sell_participation_ppm()),
-                as_percent(cfg_.participation_cap_ppm));
-
-    if (book_.valid) {
-        std::printf("last book           bid %u @ %.4f   ask %u @ %.4f\n",
-                    book_.bid_qty, as_price(book_.bid_px),
-                    book_.ask_qty, as_price(book_.ask_px));
-    }
-
-    int64_t v = 0;
-    if (vwap_.value(v)) {
-        std::printf("last vwap           %.4f over %zu quotes in window\n",
-                    as_price(v), vwap_.size());
-    }
-}
-
 void Engine::end_session() {
     if (md_ == LinkState::Connected) {
         std::printf("closing md link\n");
@@ -335,4 +303,74 @@ void Engine::check_oe_staleness() {
     }
     oe_idle_since_ns_ = now;
 
+}
+
+void Engine::report() const {
+    std::printf("=== SLIPSTREAM EXECUTION REPORT ===\n");
+    std::printf("symbol              %s\n", cfg_.symbol.c_str());
+    std::printf("quotes              %zu observed, %zu for symbol\n",
+                stats_.quotes_received, stats_.quotes_kept);
+    std::printf("trades              %zu observed, %zu for symbol\n",
+                stats_.trades_received, stats_.trades_kept);
+    std::printf("accepted            %zu\n", stats_.accepted);
+    std::printf("rejected            %zu\n", stats_.rejected);
+    std::printf("pre warm up         %zu\n", stats_.suppressed);
+    for (size_t i = 0; i < kRejectReasonCount; ++i) {
+        if (stats_.reject_reasons[i] == 0) continue;
+        std::printf("  %-24s  %zu\n", to_string(static_cast<RejectReason>(i)),
+                    stats_.reject_reasons[i]);
+    }
+
+    const uint64_t executed_qty = strategy_.bought_qty() + strategy_.sold_qty();
+    std::printf("offered qty         %lu\n", stats_.offered_qty);
+    std::printf("executed qty        %lu", executed_qty);
+    if (stats_.offered_qty > 0) {
+        std::printf("   (%.2f%%)",
+                    100.0 * static_cast<double>(executed_qty)
+                          / static_cast<double>(stats_.offered_qty));
+    }
+    std::printf("\n");
+
+    int64_t session_v = 0;
+    const bool have_session_v = vwap_.session_value(session_v);
+    if (have_session_v) std::printf("session vwap        %.4f\n", as_price(session_v));
+
+    // Favorable means opposite things per side: a buy wants to pay below the
+    // benchmark, a sell wants to receive above it.
+    int64_t avg_buy = 0;
+    if (strategy_.avg_buy_px(avg_buy)) {
+        std::printf("avg buy fill        %.4f over %lu shares\n",
+                    as_price(avg_buy), strategy_.bought_qty());
+        if (have_session_v) {
+            const int64_t slip = slippage_bps_x100(avg_buy, session_v);
+            std::printf("buy slippage        %+.2f bps   (%s)\n",
+                        as_bps(slip), slip <= 0 ? "favorable" : "unfavorable");
+        }
+    }
+
+    int64_t avg_sell = 0;
+    if (strategy_.avg_sell_px(avg_sell)) {
+        std::printf("avg sell fill       %.4f over %lu shares\n",
+                    as_price(avg_sell), strategy_.sold_qty());
+        if (have_session_v) {
+            const int64_t slip = slippage_bps_x100(avg_sell, session_v);
+            std::printf("sell slippage       %+.2f bps   (%s)\n",
+                        as_bps(slip), slip >= 0 ? "favorable" : "unfavorable");
+        }
+    }
+
+    std::printf("buy participation   %.2f%%  (cap %.2f%%)\n",
+                as_percent(strategy_.buy_participation_ppm()),
+                as_percent(cfg_.participation_cap_ppm));
+    std::printf("sell participation  %.2f%%  (cap %.2f%%)\n",
+                as_percent(strategy_.sell_participation_ppm()),
+                as_percent(cfg_.participation_cap_ppm));
+    std::printf("quoted volume       %lu on the bid, %lu on the ask\n",
+                strategy_.observed_bid_qty(), strategy_.observed_ask_qty());
+
+    if (book_.valid) {
+        std::printf("last book           bid %u @ %.4f   ask %u @ %.4f\n",
+                    book_.bid_qty, as_price(book_.bid_px),
+                    book_.ask_qty, as_price(book_.ask_px));
+    }
 }

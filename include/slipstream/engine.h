@@ -27,6 +27,7 @@ public:
         size_t rejected = 0;
         size_t suppressed = 0; // trades arrived before warmup
         size_t reject_reasons[kRejectReasonCount] = {};
+        uint64_t offered_qty = 0;
     };
 
     explicit Engine(const Config& cfg);
@@ -75,7 +76,7 @@ private:
 
     uint64_t     next_order_id_ = 0;
     uint64_t     oe_idle_since_ns_ = 0;
-    
+
     FileDescriptor md_listener_;
     FileDescriptor oe_listener_;
     FileDescriptor md_conn_;
