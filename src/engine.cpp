@@ -18,12 +18,20 @@
 
 namespace {
     constexpr size_t kRecvChunk = 2048;
+    constexpr uint64_t kHeartbeatNs = 5'000'000'000;
 
-    uint64_t now_ns() {
+    uint64_t clock_ns(const clockid_t clock) {
         timespec ts{};
-        ::clock_gettime(CLOCK_REALTIME, &ts);
-        return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000 + static_cast<uint64_t>(ts.tv_nsec);
+        ::clock_gettime(clock, &ts);
+        return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000
+             + static_cast<uint64_t>(ts.tv_nsec);
     }
+
+    // Elapsed time
+    uint64_t mono_ns() { return clock_ns(CLOCK_MONOTONIC); }
+
+    // wire's ts_ns.
+    uint64_t now_ns() { return clock_ns(CLOCK_REALTIME); }
 
     double as_price(const int64_t fixed) { return static_cast<double>(fixed) / 10'000.0; }
     double as_percent(const uint64_t ppm) { return static_cast<double>(ppm) / 10'000.0; }
@@ -97,7 +105,7 @@ void Engine::run() {
             oe_conn_i = n++;
         }
 
-        const int ready = ::poll(fds, static_cast<nfds_t>(n), -1);
+        const int ready = ::poll(fds, static_cast<nfds_t>(n), poll_timeout_ms());
         if (ready < 0) {
             if (errno == EINTR) continue;
             std::perror("poll");
@@ -110,6 +118,8 @@ void Engine::run() {
         if (oe_listen_i >= 0 && (fds[oe_listen_i].revents & POLLIN)) accept_oe();
         if (md_conn_i >= 0 && (fds[md_conn_i].revents & kReadable)) service_md();
         if (oe_conn_i >= 0 && (fds[oe_conn_i].revents & kReadable)) service_oe();
+
+        check_oe_staleness();
     }
 }
 
@@ -131,6 +141,8 @@ void Engine::accept_oe() {
         return;
     }
     oe_ = LinkState::Connected;
+    oe_idle_since_ns_ = mono_ns();
+
     std::printf("oe client connected\n");
     std::fflush(stdout);
 }
@@ -152,7 +164,11 @@ void Engine::service_oe() {
     const bool alive = pump(oe_conn_, oe_reader_, [this](const OeMessage& msg) {
         if (const Trade* t = std::get_if<Trade>(&msg)) on_trade(*t);
     });
-    if (alive) return;
+
+    if (alive) {
+        oe_idle_since_ns_ = mono_ns();
+        return;
+    }
 
     oe_ = LinkState::Closed;
     oe_conn_ = FileDescriptor{};
@@ -287,4 +303,36 @@ void Engine::end_session() {
     }
     md_ = LinkState::Closed;
     oe_ = LinkState::Closed;
+}
+
+int Engine::poll_timeout_ms() const {
+    if (oe_ != LinkState::Connected) return -1;
+
+    const uint64_t deadline = oe_idle_since_ns_ + kHeartbeatNs;
+    const uint64_t now = mono_ns();
+
+    if (now >= deadline) return 0;
+
+    return static_cast<int>((deadline - now) / 1'000'000) + 1;
+}
+
+void Engine::check_oe_staleness() {
+    if (oe_ != LinkState::Connected) return;
+
+    const uint64_t now = mono_ns();
+    const uint64_t quiet_ns = now - oe_idle_since_ns_;
+    if (quiet_ns < kHeartbeatNs) return;
+
+    std::fprintf(stderr, "oe link silent for %lu ms, sending heartbeat\n", quiet_ns / 1'000'000);
+
+    Heartbeat hb{};
+    hb.ts_ns = now_ns();
+    if (!send_oe(OeMessage{hb})) {
+        std::printf("oe client write failed\n");
+        std::fflush(stdout);
+        end_session();
+        return;
+    }
+    oe_idle_since_ns_ = now;
+
 }

@@ -54,6 +54,9 @@ private:
     void service_oe();
 
     void end_session();
+    void check_oe_staleness();
+
+    [[nodiscard]] int poll_timeout_ms() const;
 
     [[nodiscard]] bool send_oe(const OeMessage& msg);
 
@@ -69,8 +72,10 @@ private:
     RollingVwap  vwap_;
     L1           book_;
     Strategy     strategy_;
-    uint64_t     next_order_id_ = 0;
 
+    uint64_t     next_order_id_ = 0;
+    uint64_t     oe_idle_since_ns_ = 0;
+    
     FileDescriptor md_listener_;
     FileDescriptor oe_listener_;
     FileDescriptor md_conn_;
